@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 import httpx
 
 from ormas_client.http import OrmasClient
 from ormas_client.cli import _select_tuple
+from ormas_client.runner import execute_lease
 
 
 def test_control_plane_transport_uses_runner_v1_paths_and_handles_empty_claim() -> None:
@@ -169,3 +171,64 @@ def test_dry_run_does_not_queue_work_and_gateway_preview_is_nonexecuting() -> No
     assert '"dry_run": True' in source
     assert '"worker_enabled": False' in source
     assert _select_tuple({"result": {"selected_tuple_id": "glm52-openrouter-oh"}}) == "glm52-openrouter-oh"
+
+
+def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidence(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "value.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "value.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+        check=True,
+    )
+    base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    def fake_openhands(**kwargs: object) -> str:
+        worktree = kwargs["worktree"]
+        assert isinstance(worktree, Path)
+        (worktree / "value.txt").write_text("after\n", encoding="utf-8")
+        return "done"
+
+    monkeypatch.setattr("ormas_client.runner.run_openhands", fake_openhands)
+
+    class Client:
+        completed: dict[str, object] | None = None
+
+        def heartbeat(self, *_: object) -> dict[str, object]:
+            return {}
+
+        def complete(self, task_id: str, runner_id: str, token: str, evidence: dict[str, object]) -> dict[str, object]:
+            assert (task_id, runner_id, token) == ("task-1", "runner-1", "lease_secret")
+            self.completed = evidence
+            return {}
+
+    client = Client()
+    result = execute_lease(
+        client=client,  # type: ignore[arg-type]
+        repo=repo,
+        runner_id="runner-1",
+        lease_token="lease_secret",
+        task={
+            "task_id": "task-1",
+            "base_commit": base,
+            "brief": "change value",
+            "verify_command": "python -c __import__('pathlib').Path('value.txt').read_text()=='after\\n'",
+            "allowed_paths": ["value.txt"],
+        },
+        tuple_id="glm52-openrouter-oh",
+        openrouter_key="sk-or-local-only",
+        budget_usd=0.25,
+    )
+    assert (repo / "value.txt").read_text(encoding="utf-8") == "before\n"
+    assert Path(result["worktree"]).joinpath("value.txt").read_text(encoding="utf-8") == "after\n"
+    assert client.completed == {
+        "status": "completed",
+        "verification_passed": True,
+        "patch_non_empty": True,
+        "base_commit": base,
+        "result_commit": result["result_commit"],
+    }
