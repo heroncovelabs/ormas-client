@@ -83,6 +83,38 @@ def _platform_tag() -> str:
     return "linux"
 
 
+# Common field names the gateway routing preview may use for the selected
+# certified tuple, checked at the top level and inside common nested
+# envelopes (result/selection/preview).
+_TUPLE_FIELDS = (
+    "selected_tuple_id",
+    "would_have_selected_tuple_id",
+    "selected_tuple_key",
+    "tuple_key",
+    "tuple",
+)
+
+
+def _select_tuple(preview: dict[str, object]) -> str | None:
+    """Parse the selected certified tuple out of a gateway routing preview.
+
+    Checks common field names both at the top level and nested under
+    ``result``/``selection``/``preview``. Returns ``None`` if no candidate is
+    found so the caller can fail closed.
+    """
+    containers: list[dict[str, object]] = [preview]
+    for nested_key in ("result", "selection", "preview"):
+        nested = preview.get(nested_key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+    for container in containers:
+        for field in _TUPLE_FIELDS:
+            value = container.get(field)
+            if value:
+                return str(value)
+    return None
+
+
 def _runner_start(args: argparse.Namespace) -> int:
     config = load()
     repo_path = config.repositories.get(args.repo_alias)
@@ -114,13 +146,10 @@ def _runner_start(args: argparse.Namespace) -> int:
         allowed_paths=list(args.allowed_path),
         budget_usd=args.cost_cap,
     )
-    lease = control.claim(runner_id)
-    if lease is None:
-        print(json.dumps({"task_id": task_id, "status": "no_lease"}, indent=2, sort_keys=True))
-        return 0
 
     if args.dry_run:
-        # Dry-run is the default and must never execute or edit anything.
+        # Dry-run is the default and must never claim (and thereby strand) a
+        # lease, nor execute or edit anything.
         print(
             json.dumps(
                 {"task_id": task_id, "status": "dry_run", "base_commit": base_commit},
@@ -130,29 +159,46 @@ def _runner_start(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # --no-dry-run: get a routing preview from the gateway WITHOUT sending the
-    # repo path, source, OpenRouter key or any other local secret.
+    lease = control.claim(runner_id)
+    if lease is None:
+        print(json.dumps({"task_id": task_id, "status": "no_lease"}, indent=2, sort_keys=True))
+        return 0
+
+    # The claim response is {lease_token, lease_expires_at, task: {...}}. The
+    # plaintext lease_token is kept only in memory for the heartbeat/complete
+    # calls below; it is never written to disk.
+    lease_token = str(lease.get("lease_token") or "")
+    task = lease.get("task")
+    if not lease_token or not isinstance(task, dict):
+        raise SystemExit("malformed claim response; refusing to execute")
+
+    # Validate the task/base/repo envelope before doing any work.
+    if str(task.get("task_id")) != task_id:
+        raise SystemExit("claimed task_id does not match the created task; refusing to execute")
+    if str(task.get("repo_id")) != repo_id:
+        raise SystemExit("claimed repo_id does not match the registered repo; refusing to execute")
+    if str(task.get("base_commit")) != base_commit:
+        raise SystemExit("claimed base_commit does not match the local repo; refusing to execute")
+
+    # Request a gateway routing preview WITHOUT sending the repo path, source,
+    # OpenRouter key or any other local secret.
     preview = OrmasClient(config.gateway_url, access_key).routing_preview(
         {"task": args.brief, "task_type": "coding", "policy": "route"}
     )
-    tuple_id = str(preview.get("tuple") or args.tuple or "")
-    if tuple_id not in CERTIFIED_TUPLES:
+    tuple_id = _select_tuple(preview) or args.tuple
+    if not tuple_id or tuple_id not in CERTIFIED_TUPLES:
         raise SystemExit(f"selected tuple '{tuple_id}' is not certified; refusing to execute")
 
     openrouter_key = get_secret("openrouter-key")
     if not openrouter_key:
         raise SystemExit("missing OpenRouter key; run `ormas runner login` first")
 
-    lease.setdefault("task_id", task_id)
-    lease.setdefault("runner_id", runner_id)
-    lease.setdefault("base_commit", base_commit)
-    lease.setdefault("brief", args.brief)
-    lease.setdefault("verify_command", args.verify_command)
-    lease.setdefault("allowed_paths", list(args.allowed_path))
     summary = execute_lease(
         client=control,
         repo=repo,
-        lease=lease,
+        runner_id=runner_id,
+        lease_token=lease_token,
+        task=task,
         tuple_id=tuple_id,
         openrouter_key=openrouter_key,
         budget_usd=args.cost_cap,

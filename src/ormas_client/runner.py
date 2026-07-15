@@ -83,19 +83,54 @@ def run_verify(worktree: Path, verify_command: str) -> subprocess.CompletedProce
     return subprocess.run(argv, cwd=str(worktree), capture_output=True, text=True)
 
 
+# Explicit local git identity so a fresh, unconfigured client machine (no
+# ~/.gitconfig user.name/user.email) can still commit the produced patch.
+COMMIT_AUTHOR_NAME = "Ormas Client Runner"
+COMMIT_AUTHOR_EMAIL = "runner@ormas.ai"
+
+
 def commit_patch(worktree: Path, task_id: str) -> str:
     git(worktree, "add", "-A")
-    git(worktree, "commit", "-m", f"ormas task {task_id}")
+    git(
+        worktree,
+        "-c",
+        f"user.name={COMMIT_AUTHOR_NAME}",
+        "-c",
+        f"user.email={COMMIT_AUTHOR_EMAIL}",
+        "commit",
+        "-m",
+        f"ormas task {task_id}",
+    )
     return head_commit(worktree)
 
 
-class Heartbeat:
-    """Background lease heartbeat kept alive during execution."""
+class RunnerFailure(RuntimeError):
+    """A failure raised with the permitted error_category to report to the portal."""
 
-    def __init__(self, client: OrmasClient, task_id: str, runner_id: str, interval: float = 15.0):
+    def __init__(self, message: str, error_category: str = "unknown") -> None:
+        super().__init__(message)
+        self.error_category = error_category
+
+
+class Heartbeat:
+    """Background lease heartbeat kept alive during execution.
+
+    The plaintext ``lease_token`` returned by ``claim`` is carried only in
+    memory for the lifetime of the lease; it is never written to disk.
+    """
+
+    def __init__(
+        self,
+        client: OrmasClient,
+        task_id: str,
+        runner_id: str,
+        lease_token: str,
+        interval: float = 15.0,
+    ):
         self._client = client
         self._task_id = task_id
         self._runner_id = runner_id
+        self._lease_token = lease_token
         self._interval = interval
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -103,7 +138,7 @@ class Heartbeat:
     def _loop(self) -> None:
         while not self._stop.wait(self._interval):
             try:
-                self._client.heartbeat(self._task_id, self._runner_id)
+                self._client.heartbeat(self._task_id, self._runner_id, self._lease_token)
             except Exception:  # a transient heartbeat failure must not crash work
                 pass
 
@@ -120,26 +155,30 @@ def execute_lease(
     *,
     client: OrmasClient,
     repo: Path,
-    lease: dict[str, Any],
+    runner_id: str,
+    lease_token: str,
+    task: dict[str, Any],
     tuple_id: str,
     openrouter_key: str,
     budget_usd: float,
 ) -> dict[str, Any]:
-    """Execute a leased task end to end and return sanitized evidence.
+    """Execute a leased task end to end and post strict sanitized evidence.
 
-    The registered checkout is never modified; all work happens in a disposable
-    detached worktree that is removed afterwards.
+    ``task`` is the ``task`` envelope nested in the ``claim`` response. The
+    registered checkout is never modified; all work happens in a disposable
+    detached worktree that is kept afterwards for client review. The
+    plaintext ``lease_token`` is passed in and used only in memory for the
+    heartbeat and the terminal completion; it is never persisted locally.
     """
-    task_id = str(lease.get("task_id") or lease.get("id"))
-    runner_id = str(lease.get("runner_id"))
-    base_commit = str(lease.get("base_commit") or head_commit(repo))
-    brief = str(lease.get("brief") or "")
-    verify_command = str(lease.get("verify_command") or "")
-    allowed = list(lease.get("allowed_paths") or [])
+    task_id = str(task["task_id"])
+    base_commit = str(task.get("base_commit") or head_commit(repo))
+    brief = str(task.get("brief") or "")
+    verify_command = str(task.get("verify_command") or "")
+    allowed = list(task.get("allowed_paths") or [])
 
     worktree = create_worktree(repo, base_commit)
     try:
-        with Heartbeat(client, task_id, runner_id):
+        with Heartbeat(client, task_id, runner_id, lease_token):
             run_openhands(
                 tuple_id=tuple_id,
                 openrouter_key=openrouter_key,
@@ -147,25 +186,28 @@ def execute_lease(
                 brief=brief,
                 budget_usd=budget_usd,
             )
-        # Gates precede completion: allowed paths, then verify, then commit.
+        # Gates precede completion: patch present, allowed paths, then verify.
         touched = changed_paths(worktree)
         if not touched:
-            raise ValueError("no changes produced")
-        enforce_allowed_paths(worktree, allowed)
+            raise RunnerFailure("no changes produced", "verification_failed")
+        try:
+            enforce_allowed_paths(worktree, allowed)
+        except ValueError as exc:
+            raise RunnerFailure(str(exc), "verification_failed") from exc
         verify = run_verify(worktree, verify_command)
         if verify.returncode != 0:
-            raise ValueError(f"verify command failed with exit {verify.returncode}")
+            raise RunnerFailure(
+                f"verify command failed with exit {verify.returncode}", "verification_failed"
+            )
         result_commit = commit_patch(worktree, task_id)
         evidence = {
-            "task_id": task_id,
             "status": "completed",
-            "tuple": tuple_id,
+            "verification_passed": True,
+            "patch_non_empty": True,
             "base_commit": base_commit,
             "result_commit": result_commit,
-            "changed_paths": touched,
-            "verify_exit_code": verify.returncode,
         }
-        client.complete(task_id, evidence)
+        client.complete(task_id, runner_id, lease_token, evidence)
         return {
             "task_id": task_id,
             "tuple": tuple_id,
@@ -174,10 +216,19 @@ def execute_lease(
         }
     except Exception as exc:
         # On any failure send sanitized failed evidence for the existing lease.
+        category = exc.error_category if isinstance(exc, RunnerFailure) else "unknown"
         try:
             client.complete(
                 task_id,
-                {"task_id": task_id, "status": "failed", "reason": type(exc).__name__},
+                runner_id,
+                lease_token,
+                {
+                    "status": "failed",
+                    "verification_passed": False,
+                    "patch_non_empty": False,
+                    "base_commit": base_commit,
+                    "error_category": category,
+                },
             )
         except Exception:
             pass

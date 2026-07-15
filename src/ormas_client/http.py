@@ -8,6 +8,9 @@ import httpx
 # public runner is permitted to call on the portal control plane.
 RUNNER_V1 = "/api/runner/v1"
 
+# Every runner-v1 body carries the schema version the deployed portal expects.
+SCHEMA_VERSION = "ormas-runner-v1"
+
 # Local secrets and paths that must never cross either HTTP boundary. Every
 # outbound control-plane body is screened against these keys before it is sent.
 _FORBIDDEN_KEYS = frozenset(
@@ -83,11 +86,12 @@ class OrmasClient:
         response = self._post(
             f"{RUNNER_V1}/registrations",
             {
+                "schema_version": SCHEMA_VERSION,
                 "runner_id": runner_id,
-                "version": version,
+                "runner_version": version,
                 "platform": platform,
                 "capacity": capacity,
-                "status": "healthy",
+                "health": {"status": "healthy", "active_tasks": 0},
             },
         )
         response.raise_for_status()
@@ -99,10 +103,12 @@ class OrmasClient:
         response = self._post(
             f"{RUNNER_V1}/repositories",
             {
+                "schema_version": SCHEMA_VERSION,
                 "repo_id": repo_id,
                 "runner_id": runner_id,
-                "alias": alias,
-                "head_commit": head_commit,
+                "display_alias": alias,
+                "base_commit": head_commit,
+                "preflight_state": "ready",
             },
         )
         response.raise_for_status()
@@ -123,6 +129,7 @@ class OrmasClient:
         response = self._post(
             f"{RUNNER_V1}/tasks",
             {
+                "schema_version": SCHEMA_VERSION,
                 "task_id": task_id,
                 "runner_id": runner_id,
                 "repo_id": repo_id,
@@ -137,25 +144,50 @@ class OrmasClient:
         return response.json()
 
     def claim(self, runner_id: str) -> dict[str, Any] | None:
-        """Claim the next lease. A 204 (no work) returns ``None``."""
-        response = self._post(f"{RUNNER_V1}/leases", {"runner_id": runner_id})
-        if response.status_code == 204:
-            return None
-        response.raise_for_status()
-        return response.json()
+        """Claim the next lease. A 204 (no work) returns ``None``.
 
-    def heartbeat(self, task_id: str, runner_id: str) -> dict[str, Any] | None:
+        On success the response is ``{lease_token, lease_expires_at,
+        task: {...}}``. The plaintext ``lease_token`` must only ever be kept
+        in memory and passed back on subsequent heartbeat/complete calls.
+        """
         response = self._post(
-            f"{RUNNER_V1}/leases/{task_id}/heartbeats",
-            {"runner_id": runner_id},
+            f"{RUNNER_V1}/leases", {"schema_version": SCHEMA_VERSION, "runner_id": runner_id}
         )
         if response.status_code == 204:
             return None
         response.raise_for_status()
         return response.json()
 
-    def complete(self, task_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
-        response = self._post(f"{RUNNER_V1}/leases/{task_id}/completions", evidence)
+    def heartbeat(self, task_id: str, runner_id: str, lease_token: str) -> dict[str, Any] | None:
+        response = self._post(
+            f"{RUNNER_V1}/leases/{task_id}/heartbeat",
+            {
+                "schema_version": SCHEMA_VERSION,
+                "runner_id": runner_id,
+                "lease_token": lease_token,
+            },
+        )
+        if response.status_code == 204:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    def complete(
+        self,
+        task_id: str,
+        runner_id: str,
+        lease_token: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = self._post(
+            f"{RUNNER_V1}/leases/{task_id}/complete",
+            {
+                "schema_version": SCHEMA_VERSION,
+                "runner_id": runner_id,
+                "lease_token": lease_token,
+                "evidence": evidence,
+            },
+        )
         response.raise_for_status()
         return response.json()
 

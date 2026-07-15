@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 
 from ormas_client.http import OrmasClient
+from ormas_client.cli import _select_tuple
 
 
 def test_control_plane_transport_uses_runner_v1_paths_and_handles_empty_claim() -> None:
@@ -157,3 +158,14 @@ def test_public_package_contains_local_openhands_executor() -> None:
     source = (package / "openhands_runner.py").read_text(encoding="utf-8")
     assert "from openhands.sdk import" in source
     assert "from openhands.tools.preset.default import get_default_tools" in source
+
+
+def test_dry_run_does_not_queue_work_and_gateway_preview_is_nonexecuting() -> None:
+    package = Path(__file__).parents[1] / "src" / "ormas_client"
+    source = (package / "cli.py").read_text(encoding="utf-8")
+    dry_run_gate = source.index("if args.dry_run:")
+    create_task = source.index("control.create_task(")
+    assert dry_run_gate < create_task
+    assert '"dry_run": True' in source
+    assert '"worker_enabled": False' in source
+    assert _select_tuple({"result": {"selected_tuple_id": "glm52-openrouter-oh"}}) == "glm52-openrouter-oh"
