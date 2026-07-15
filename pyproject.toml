@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ormas-client"
+version = "0.1.0"
+description = "Local Ormas runner and MCP client"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+authors = [{ name = "Heron Cove Labs" }]
+dependencies = [
+  "httpx>=0.27,<1",
+  "mcp>=1.0,<2",
+  "platformdirs>=4.3,<5",
+  "keyring>=25.6,<26",
+]
+
+[project.optional-dependencies]
+# 1.16.0 is the latest version available from the public package index.
+# Internal 1.17 development installs are not a reproducible customer dependency.
+openhands = ["openhands==1.16.0"]
+dev = ["pytest>=8.3,<9", "pytest-httpx>=0.35,<1", "ruff>=0.9,<1"]
+
+[project.scripts]
+ormas = "ormas_client.cli:main"
+ormas-mcp = "ormas_client.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ormas_client"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
