@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 
 import httpx
+import pytest
 
 from ormas_client.http import OrmasClient
 from ormas_client.cli import _select_tuple
@@ -151,6 +152,53 @@ def test_control_plane_payloads_match_the_deployed_runner_v1_contract() -> None:
             },
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected"),
+    [
+        (
+            400,
+            {
+                "error": "invalid task draft",
+                "issues": [{"path": ["verify_command"], "message": "Invalid string"}],
+            },
+            "invalid task draft: verify_command: Invalid string",
+        ),
+        (500, {"error": "runner schema is not ready"}, "runner schema is not ready"),
+    ],
+)
+def test_runner_api_errors_surface_safe_actionable_server_detail(
+    status_code: int,
+    body: dict[str, object],
+    expected: str,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json=body, request=request)
+
+    client = OrmasClient(
+        "https://ormas.ai",
+        "tb_live_must_not_leak",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.create_task(
+            task_id="task-1",
+            runner_id="runner-1",
+            repo_id="repo-1",
+            base_commit="a1b2c3d",
+            brief="Repair parser edge case",
+            verify_command="pytest -q",
+            allowed_paths=["src/**"],
+            budget_usd=0.25,
+        )
+
+    message = str(exc_info.value)
+    assert expected in message
+    assert f"HTTP {status_code}" in message
+    assert "tb_live_must_not_leak" not in message
+    assert "Traceback" not in message
 
 
 def test_public_package_contains_local_openhands_executor() -> None:
