@@ -2,31 +2,31 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from .config import get_secret, load
-from .http import OrmasClient
+from .cli import run_registered_task
 
 mcp = FastMCP("ormas")
 
 
 @mcp.tool()
-def ormas_submit_task(task: str, repo_alias: str, dry_run: bool = True) -> dict:
-    config = load()
-    repo_path = config.repositories.get(repo_alias)
-    if not repo_path:
-        raise ValueError(f"unknown repository alias: {repo_alias}")
-    access_key = get_secret("access-key")
-    if not access_key:
-        raise ValueError("not logged in")
-    return OrmasClient(config.gateway_url, access_key).submit(
-        {
-            "task": task,
-            "task_type": "coding",
-            "policy": "draft",
-            "dry_run": dry_run,
-            "repo_path": repo_path,
-            "worker_enabled": not dry_run,
-            "cost_cap_usd": 0.25,
-        }
+def ormas_submit_task(
+    task: str,
+    repo_alias: str,
+    verify_command: str,
+    allowed_paths: list[str],
+    cost_cap_usd: float = 0.25,
+    dry_run: bool = True,
+) -> dict:
+    # Delegates to the SAME runner-v1 service the CLI's `ormas runner start`
+    # uses, so the lifecycle (registration, dry-run nonqueueing, task
+    # create/claim, nonexecuting gateway preview, certified tuple allowlist,
+    # local detached-worktree execution) is defined in exactly one place.
+    return run_registered_task(
+        repo_alias=repo_alias,
+        brief=task,
+        verify_command=verify_command,
+        allowed_paths=allowed_paths,
+        cost_cap_usd=cost_cap_usd,
+        dry_run=dry_run,
     )
 
 

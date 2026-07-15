@@ -9,6 +9,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from .config import get_secret, load, save, set_secret
 from .http import OrmasClient
@@ -137,7 +138,35 @@ def _select_tuple(preview: dict[str, object]) -> str | None:
     return None
 
 
-def _runner_start(args: argparse.Namespace) -> int:
+def run_registered_task(
+    *,
+    repo_alias: str,
+    brief: str,
+    verify_command: str,
+    allowed_paths: list[str],
+    cost_cap_usd: float,
+    dry_run: bool,
+    tuple_override: str | None = None,
+) -> dict[str, object]:
+    """Runner-v1 orchestration shared by the CLI runner and the inline MCP tool.
+
+    Loads the registered repo alias, requires keyring credentials, derives
+    HEAD/base/repo id, registers the runner and repo with the portal control
+    plane, keeps dry-run nonqueueing, creates/claims a runner-v1 task for
+    live runs, requests a nonexecuting gateway routing preview (never
+    sending the local repo path, source or OpenRouter key), enforces the
+    certified tuple allowlist, executes locally in the detached worktree and
+    returns a structured review result. Never auto-merges.
+    """
+    args = SimpleNamespace(
+        repo_alias=repo_alias,
+        brief=brief,
+        verify_command=verify_command,
+        allowed_path=allowed_paths,
+        cost_cap=cost_cap_usd,
+        dry_run=dry_run,
+        tuple=tuple_override,
+    )
     config = load()
     repo_path = config.repositories.get(args.repo_alias)
     if not repo_path:
@@ -163,14 +192,7 @@ def _runner_start(args: argparse.Namespace) -> int:
         # Dry-run is the default and must never create a task, claim (and
         # thereby strand) a lease, nor execute or edit anything. Only the
         # runner/repo registration above has run.
-        print(
-            json.dumps(
-                {"task_id": task_id, "status": "dry_run", "base_commit": base_commit},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
+        return {"task_id": task_id, "status": "dry_run", "base_commit": base_commit}
 
     control.create_task(
         task_id=task_id,
@@ -185,8 +207,7 @@ def _runner_start(args: argparse.Namespace) -> int:
 
     lease = control.claim(runner_id)
     if lease is None:
-        print(json.dumps({"task_id": task_id, "status": "no_lease"}, indent=2, sort_keys=True))
-        return 0
+        return {"task_id": task_id, "status": "no_lease"}
 
     # The claim response is {lease_token, lease_expires_at, task: {...}}. The
     # plaintext lease_token is kept only in memory for the heartbeat/complete
@@ -223,7 +244,7 @@ def _runner_start(args: argparse.Namespace) -> int:
     if not openrouter_key:
         raise SystemExit("missing OpenRouter key; run `ormas runner login` first")
 
-    summary = execute_lease(
+    return execute_lease(
         client=control,
         repo=repo,
         runner_id=runner_id,
@@ -233,9 +254,26 @@ def _runner_start(args: argparse.Namespace) -> int:
         openrouter_key=openrouter_key,
         budget_usd=args.cost_cap,
     )
+
+
+def _runner_start(args: argparse.Namespace) -> int:
+    result = run_registered_task(
+        repo_alias=args.repo_alias,
+        brief=args.brief,
+        verify_command=args.verify_command,
+        allowed_paths=list(args.allowed_path),
+        cost_cap_usd=args.cost_cap,
+        dry_run=args.dry_run,
+        tuple_override=args.tuple,
+    )
+    if "status" in result:
+        # dry_run and no_lease results carry a structured "status" instead
+        # of a completed execute_lease summary.
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     print(
-        f"task={summary['task_id']} tuple={summary['tuple']} "
-        f"worktree={summary['worktree']} result_commit={summary['result_commit']}"
+        f"task={result['task_id']} tuple={result['tuple']} "
+        f"worktree={result['worktree']} result_commit={result['result_commit']}"
     )
     return 0
 
