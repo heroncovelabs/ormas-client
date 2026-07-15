@@ -216,7 +216,7 @@ def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidenc
             "task_id": "task-1",
             "base_commit": base,
             "brief": "change value",
-            "verify_command": "python -c __import__('pathlib').Path('value.txt').read_text()=='after\\n'",
+            "verify_command": "python -c \"assert __import__('pathlib').Path('value.txt').read_text() == 'after\\n'\"",
             "allowed_paths": ["value.txt"],
         },
         tuple_id="glm52-openrouter-oh",

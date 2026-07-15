@@ -57,15 +57,21 @@ def remove_worktree(repo: Path, worktree: Path) -> None:
 
 def changed_paths(worktree: Path) -> list[str]:
     """Return paths touched in the worktree relative to its base commit."""
-    out = git(worktree, "status", "--porcelain")
-    paths: list[str] = []
-    for line in out.splitlines():
-        entry = line[3:].strip()
-        if " -> " in entry:  # rename
-            entry = entry.split(" -> ", 1)[1]
-        if entry:
-            paths.append(entry)
-    return paths
+    tracked = subprocess.run(
+        ["git", "-C", str(worktree), "diff", "--name-only", "-z", "HEAD"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    untracked = subprocess.run(
+        ["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard", "-z"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    return [
+        raw.decode("utf-8", errors="surrogateescape")
+        for raw in (tracked + untracked).split(b"\0")
+        if raw
+    ]
 
 
 def enforce_allowed_paths(worktree: Path, allowed: list[str]) -> None:
