@@ -74,6 +74,28 @@ def _repo_add(args: argparse.Namespace) -> int:
     return 0
 
 
+_INLINE_HOST_COMMANDS: dict[str, list[str]] = {
+    "codex": ["codex", "mcp", "add", "ormas", "--", "ormas-mcp"],
+    "claude": ["claude", "mcp", "add", "--scope", "project", "ormas", "--", "ormas-mcp"],
+}
+
+
+def _connect(args: argparse.Namespace) -> int:
+    path = Path.cwd().resolve()
+    alias = path.name
+    if not path.is_dir() or not (path / ".git").exists():
+        raise SystemExit(f"not a Git repository: {path}")
+    subprocess.run(["git", "-C", str(path), "status", "--porcelain"], check=True, capture_output=True)
+    config = load()
+    config.repositories[alias] = str(path)
+    config.repo_ids[alias] = repo_id_for(path)
+    save(config)
+    command = _INLINE_HOST_COMMANDS[args.host]
+    subprocess.run(command, check=True, capture_output=True)
+    print(f"Connected {alias} -> {path}. Restart {args.host} to load the ormas MCP server.")
+    return 0
+
+
 def _platform_tag() -> str:
     system = _platform.system().lower()
     if system == "darwin":
@@ -258,6 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("alias")
     add.add_argument("path")
     add.set_defaults(func=_repo_add)
+    connect = sub.add_parser("connect")
+    connect.add_argument("--host", choices=sorted(_INLINE_HOST_COMMANDS), required=True)
+    connect.set_defaults(func=_connect)
     return parser
 
 
