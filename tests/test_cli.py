@@ -15,10 +15,11 @@ def test_public_command_contract() -> None:
     assert repo.alias == "trading"
     start = parser.parse_args(["runner", "start", "--repo-alias", "trading", "--brief", "fix"])
     assert start.dry_run is True
+    assert start.verify_command
+    assert start.allowed_path
 
 
 def test_repo_add_rejects_non_git_directory(tmp_path: Path) -> None:
     args = build_parser().parse_args(["repo", "add", "bad", str(tmp_path)])
     with pytest.raises(SystemExit, match="not a Git repository"):
         args.func(args)
-
