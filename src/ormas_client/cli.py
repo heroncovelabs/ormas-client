@@ -136,6 +136,20 @@ def _runner_start(args: argparse.Namespace) -> int:
     save(config)
 
     task_id = f"task-{uuid.uuid4().hex[:12]}"
+
+    if args.dry_run:
+        # Dry-run is the default and must never create a task, claim (and
+        # thereby strand) a lease, nor execute or edit anything. Only the
+        # runner/repo registration above has run.
+        print(
+            json.dumps(
+                {"task_id": task_id, "status": "dry_run", "base_commit": base_commit},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
     control.create_task(
         task_id=task_id,
         runner_id=runner_id,
@@ -146,18 +160,6 @@ def _runner_start(args: argparse.Namespace) -> int:
         allowed_paths=list(args.allowed_path),
         budget_usd=args.cost_cap,
     )
-
-    if args.dry_run:
-        # Dry-run is the default and must never claim (and thereby strand) a
-        # lease, nor execute or edit anything.
-        print(
-            json.dumps(
-                {"task_id": task_id, "status": "dry_run", "base_commit": base_commit},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
 
     lease = control.claim(runner_id)
     if lease is None:
@@ -183,7 +185,13 @@ def _runner_start(args: argparse.Namespace) -> int:
     # Request a gateway routing preview WITHOUT sending the repo path, source,
     # OpenRouter key or any other local secret.
     preview = OrmasClient(config.gateway_url, access_key).routing_preview(
-        {"task": args.brief, "task_type": "coding", "policy": "route"}
+        {
+            "task": args.brief,
+            "task_type": "coding",
+            "policy": "draft",
+            "dry_run": True,
+            "worker_enabled": False,
+        }
     )
     tuple_id = _select_tuple(preview) or args.tuple
     if not tuple_id or tuple_id not in CERTIFIED_TUPLES:
