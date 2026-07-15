@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import Config, get_secret, load, save, set_secret
+from .config import get_secret, load, save, set_secret
 from .http import OrmasClient
 
 
@@ -74,6 +74,11 @@ def _runner_start(args: argparse.Namespace) -> int:
     access_key = get_secret("access-key")
     if not access_key:
         raise SystemExit("not logged in; run `ormas runner login` first")
+    if not args.dry_run:
+        raise SystemExit(
+            "live local execution is not enabled in this beta build; "
+            "rerun with --dry-run while the control-plane lease path is being commissioned"
+        )
     payload = {
         "task": args.brief,
         "task_type": "coding",
