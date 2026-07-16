@@ -62,21 +62,76 @@ class OrmasClient:
     def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         return self._client.post(path, json=self._screen(payload))
 
+    @staticmethod
+    def _format_issue(issue: dict[str, Any]) -> str:
+        """Render one validation issue as ``<dot.path>: <message>``."""
+        message = issue.get("message")
+        if not isinstance(message, str) or not message:
+            return ""
+        path = issue.get("path")
+        if isinstance(path, list) and path:
+            return f"{'.'.join(str(p) for p in path)}: {message}"
+        if isinstance(path, str) and path:
+            return f"{path}: {message}"
+        return message
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
+        """Raise a safe ``RuntimeError`` for non-success responses.
+
+        The message starts with ``HTTP <status>`` and surfaces only the
+        server's top-level ``error`` string plus concise ``issues`` details.
+        No authorization headers, access keys, request bodies, raw source, or
+        local paths ever appear in the message. JSON is parsed best-effort; a
+        non-JSON or malformed body yields a bounded status/reason message.
+        """
+        status = response.status_code
+        if status < 400:
+            return
+
+        data: Any = None
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+
+        parts: list[str] = []
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, str) and error:
+                parts.append(error)
+            issues = data.get("issues")
+            if isinstance(issues, list) and issues:
+                details = [
+                    detail
+                    for issue in issues
+                    if isinstance(issue, dict)
+                    for detail in (self._format_issue(issue),)
+                    if detail
+                ]
+                if details:
+                    parts.append("; ".join(details))
+
+        if not parts:
+            reason = response.reason_phrase or "error"
+            parts.append(reason)
+
+        raise RuntimeError(f"HTTP {status}: " + ": ".join(parts))
+
     # -- gateway ------------------------------------------------------------
     def health(self) -> dict[str, Any]:
         response = self._client.get("/health")
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         response = self._post("/ormas/task", payload)
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def routing_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Ask the gateway to route a brief WITHOUT sending any local secret."""
         response = self._post("/ormas/task", payload)
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     # -- runner-v1 control plane -------------------------------------------
@@ -94,7 +149,7 @@ class OrmasClient:
                 "health": {"status": "healthy", "active_tasks": 0},
             },
         )
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def register_repo(
@@ -111,7 +166,7 @@ class OrmasClient:
                 "preflight_state": "ready",
             },
         )
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def create_task(
@@ -140,7 +195,7 @@ class OrmasClient:
                 "budget_usd": budget_usd,
             },
         )
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def claim(self, runner_id: str) -> dict[str, Any] | None:
@@ -155,7 +210,7 @@ class OrmasClient:
         )
         if response.status_code == 204:
             return None
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def heartbeat(self, task_id: str, runner_id: str, lease_token: str) -> dict[str, Any] | None:
@@ -169,7 +224,7 @@ class OrmasClient:
         )
         if response.status_code == 204:
             return None
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
     def complete(
@@ -188,6 +243,6 @@ class OrmasClient:
                 "evidence": evidence,
             },
         )
-        response.raise_for_status()
+        self._raise_for_status(response)
         return response.json()
 
