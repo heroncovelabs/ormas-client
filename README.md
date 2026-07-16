@@ -2,6 +2,12 @@
 
 The public local runner and MCP client for Ormas coding dispatch.
 
+The client seam is intentionally inspectable: local execution, credential handling, MCP adapters,
+and verification belong on the customer side of the trust boundary. Routing intelligence,
+reputation evidence, economics, and settlement remain service-side. See
+[`docs/OPEN_SOURCE_BOUNDARY.md`](docs/OPEN_SOURCE_BOUNDARY.md) for the product boundary, current
+MIT status, proposed Apache 2.0 transition, trademark follow-up, and signed-receipt requirements.
+
 ## Beta installation
 
 Requires [`uv`](https://docs.astral.sh/uv/). The installer creates an isolated Python 3.12 tool
@@ -44,4 +50,3 @@ The first live run uses `--no-dry-run`. It fetches a routing preview from the ga
 repo path, source or key), executes only certified OpenHands×OpenRouter tuples in a disposable
 detached git worktree, enforces the allowed-path and verify gates before committing, and never
 auto-merges. Use it only during an attended rehearsal after `ormas doctor` is fully green.
-
