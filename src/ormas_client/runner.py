@@ -8,6 +8,7 @@ here writes to the registered checkout or auto-merges the produced patch.
 from __future__ import annotations
 
 import fnmatch
+import os
 import shlex
 import subprocess
 import tempfile
@@ -81,12 +82,23 @@ def enforce_allowed_paths(worktree: Path, allowed: list[str]) -> None:
             raise ValueError(f"change touches disallowed path: {path}")
 
 
-def run_verify(worktree: Path, verify_command: str) -> subprocess.CompletedProcess[str]:
+def run_verify(
+    worktree: Path,
+    verify_command: str,
+    *,
+    dependency_root: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     """Execute the verify command with no shell metacharacter interpretation."""
     argv = shlex.split(verify_command)
     if not argv:
         raise ValueError("empty verify command")
-    return subprocess.run(argv, cwd=str(worktree), capture_output=True, text=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(worktree)
+    if dependency_root is not None:
+        venv_bin = dependency_root / ".venv" / "bin"
+        if venv_bin.is_dir():
+            env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
+    return subprocess.run(argv, cwd=str(worktree), env=env, capture_output=True, text=True)
 
 
 # Explicit local git identity so a fresh, unconfigured client machine (no
@@ -103,6 +115,8 @@ def commit_patch(worktree: Path, task_id: str) -> str:
         f"user.name={COMMIT_AUTHOR_NAME}",
         "-c",
         f"user.email={COMMIT_AUTHOR_EMAIL}",
+        "-c",
+        "core.hooksPath=/dev/null",
         "commit",
         "-m",
         f"ormas task {task_id}",
@@ -200,7 +214,7 @@ def execute_lease(
             enforce_allowed_paths(worktree, allowed)
         except ValueError as exc:
             raise RunnerFailure(str(exc), "verification_failed") from exc
-        verify = run_verify(worktree, verify_command)
+        verify = run_verify(worktree, verify_command, dependency_root=repo)
         if verify.returncode != 0:
             raise RunnerFailure(
                 f"verify command failed with exit {verify.returncode}", "verification_failed"

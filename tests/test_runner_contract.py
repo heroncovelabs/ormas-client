@@ -9,7 +9,50 @@ import pytest
 from ormas_client.http import OrmasClient
 from ormas_client import cli
 from ormas_client.cli import _select_tuple
-from ormas_client.runner import execute_lease
+from ormas_client.runner import commit_patch, execute_lease, head_commit, run_verify
+
+
+def test_run_verify_uses_registered_repo_venv_and_worktree_pythonpath(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    worktree.mkdir()
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run_verify(worktree, "python -m pytest -q", dependency_root=repo)
+
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert str(env["PATH"]).split(":", 1)[0] == str(repo / ".venv" / "bin")
+    assert env["PYTHONPATH"] == str(worktree)
+
+
+def test_commit_patch_bypasses_repository_local_hooks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "value.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "value.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+        check=True,
+    )
+    hooks = repo / ".git" / "hooks"
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    (repo / "value.txt").write_text("after\n", encoding="utf-8")
+
+    result_commit = commit_patch(repo, "task-1")
+
+    assert result_commit == head_commit(repo)
 
 
 def test_control_plane_transport_uses_runner_v1_paths_and_handles_empty_claim() -> None:
