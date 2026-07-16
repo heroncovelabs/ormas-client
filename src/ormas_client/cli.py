@@ -108,10 +108,11 @@ def _platform_tag() -> str:
 
 # Common field names the gateway routing preview may use for the selected
 # certified tuple, checked at the top level and inside common nested
-# envelopes (result/selection/preview).
+# envelopes (result/selection/preview/worker_preview).
 _TUPLE_FIELDS = (
     "selected_tuple_id",
     "would_have_selected_tuple_id",
+    "would_run_tuple_id",
     "selected_tuple_key",
     "tuple_key",
     "tuple",
@@ -122,11 +123,11 @@ def _select_tuple(preview: dict[str, object]) -> str | None:
     """Parse the selected certified tuple out of a gateway routing preview.
 
     Checks common field names both at the top level and nested under
-    ``result``/``selection``/``preview``. Returns ``None`` if no candidate is
-    found so the caller can fail closed.
+    ``result``/``selection``/``preview``/``worker_preview``. Returns ``None``
+    if no candidate is found so the caller can fail closed.
     """
     containers: list[dict[str, object]] = [preview]
-    for nested_key in ("result", "selection", "preview"):
+    for nested_key in ("result", "selection", "preview", "worker_preview"):
         nested = preview.get(nested_key)
         if isinstance(nested, dict):
             containers.append(nested)
@@ -226,19 +227,46 @@ def run_registered_task(
         raise SystemExit("claimed base_commit does not match the local repo; refusing to execute")
 
     # Request a gateway routing preview WITHOUT sending the repo path, source,
-    # OpenRouter key or any other local secret.
-    preview = OrmasClient(config.gateway_url, access_key).routing_preview(
-        {
-            "task": args.brief,
-            "task_type": "coding",
-            "policy": "draft",
-            "dry_run": True,
-            "worker_enabled": False,
-        }
-    )
-    tuple_id = _select_tuple(preview) or args.tuple
-    if not tuple_id or tuple_id not in CERTIFIED_TUPLES:
-        raise SystemExit(f"selected tuple '{tuple_id}' is not certified; refusing to execute")
+    # OpenRouter key or any other local secret. Any failure in this
+    # routing-preview / tuple-selection phase must complete the claimed lease
+    # with sanitized failed evidence so it is never stranded.
+    try:
+        preview = OrmasClient(config.gateway_url, access_key).routing_preview(
+            {
+                "task": args.brief,
+                "task_type": "coding",
+                "policy": "draft",
+                "dry_run": True,
+                "worker_enabled": False,
+            }
+        )
+        tuple_id = _select_tuple(preview) or args.tuple
+        if not tuple_id or tuple_id not in CERTIFIED_TUPLES:
+            # Fail closed: uncertified tuples never execute.
+            raise RuntimeError(
+                f"selected tuple '{tuple_id}' is not certified; refusing to execute"
+            )
+    except Exception as exc:
+        try:
+            control.complete(
+                str(task.get("task_id") or task_id),
+                runner_id,
+                lease_token,
+                {
+                    "status": "failed",
+                    "verification_passed": False,
+                    "patch_non_empty": False,
+                    "base_commit": base_commit,
+                    "error_category": "routing_preview",
+                },
+            )
+        except Exception:
+            # Cleanup must not mask the original routing failure.
+            pass
+        # Cover the original message only if it is already a safe RuntimeError
+        # from the HTTP layer; never surface keys, paths, or lease tokens.
+        safe_message = str(exc)
+        raise RuntimeError(f"routing preview failed: {safe_message}") from exc
 
     openrouter_key = get_secret("openrouter-key")
     if not openrouter_key:
