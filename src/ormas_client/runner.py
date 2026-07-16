@@ -233,6 +233,7 @@ def execute_lease(
             raise RunnerFailure(
                 f"verify command failed with exit {verify.returncode}", "verification_failed"
             )
+        observed_cost = _reported_openhands_cost(openhands_result)
         result_commit = commit_patch(worktree, task_id)
         evidence = {
             "status": "completed",
@@ -240,7 +241,12 @@ def execute_lease(
             "patch_non_empty": True,
             "base_commit": base_commit,
             "result_commit": result_commit,
+            "tuple": tuple_id,
+            "harness": "openhands",
+            "changed_files": touched,
         }
+        if observed_cost is not None:
+            evidence["observed_cost_usd"] = observed_cost
         client.complete(task_id, runner_id, lease_token, evidence)
         result: dict[str, Any] = {
             "task_id": task_id,
@@ -249,7 +255,6 @@ def execute_lease(
             "result_commit": result_commit,
             "changed_files": touched,
         }
-        observed_cost = _reported_openhands_cost(openhands_result)
         if observed_cost is not None:
             result["observed_cost_usd"] = observed_cost
         return result
