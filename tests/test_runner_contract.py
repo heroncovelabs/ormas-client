@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from ormas_client.http import OrmasClient
+from ormas_client import cli
 from ormas_client.cli import _select_tuple
 from ormas_client.runner import execute_lease
 
@@ -219,6 +220,86 @@ def test_dry_run_does_not_queue_work_and_gateway_preview_is_nonexecuting() -> No
     assert '"dry_run": True' in source
     assert '"worker_enabled": False' in source
     assert _select_tuple({"result": {"selected_tuple_id": "glm52-openrouter-oh"}}) == "glm52-openrouter-oh"
+
+
+def test_gateway_worker_preview_shape_selects_the_would_run_tuple() -> None:
+    assert _select_tuple(
+        {"worker_preview": {"would_run_tuple_id": "grok45-openrouter-oh"}}
+    ) == "grok45-openrouter-oh"
+
+
+def test_preexecution_preview_failure_completes_the_claimed_lease(monkeypatch, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    config = type("Config", (), {
+        "repositories": {"repo": str(repo)},
+        "repo_ids": {"repo": "repo-1"},
+        "runner_id": "runner-1",
+        "control_url": "https://ormas.ai",
+        "gateway_url": "https://ormas-gateway.fly.dev",
+    })()
+    completed: list[tuple[str, str, str, dict[str, object]]] = []
+
+    class Client:
+        def __init__(self, base_url: str, _key: str):
+            self.base_url = base_url
+
+        def register_runner(self, *_args):
+            return {}
+
+        def register_repo(self, *_args):
+            return {}
+
+        def create_task(self, **_kwargs):
+            return {}
+
+        def claim(self, _runner_id: str):
+            return {
+                "lease_token": "lease-secret",
+                "task": {
+                    "task_id": "task-fixed",
+                    "repo_id": "repo-1",
+                    "base_commit": "abc1234",
+                },
+            }
+
+        def routing_preview(self, _payload):
+            raise RuntimeError("HTTP 404: Not Found")
+
+        def complete(self, task_id, runner_id, token, evidence):
+            completed.append((task_id, runner_id, token, evidence))
+            return {}
+
+    monkeypatch.setattr(cli, "load", lambda: config)
+    monkeypatch.setattr(cli, "save", lambda _config: None)
+    monkeypatch.setattr(cli, "get_secret", lambda _name: "configured")
+    monkeypatch.setattr(cli, "head_commit", lambda _repo: "abc1234")
+    monkeypatch.setattr(cli, "OrmasClient", Client)
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: type("U", (), {"hex": "fixed"})())
+
+    with pytest.raises(RuntimeError, match="routing preview.*HTTP 404"):
+        cli.run_registered_task(
+            repo_alias="repo",
+            brief="repair parser",
+            verify_command="pytest -q",
+            allowed_paths=["src/parser.py"],
+            cost_cap_usd=0.25,
+            dry_run=False,
+        )
+
+    assert completed == [(
+        "task-fixed",
+        "runner-1",
+        "lease-secret",
+        {
+            "status": "failed",
+            "verification_passed": False,
+            "patch_non_empty": False,
+            "base_commit": "abc1234",
+            "error_category": "routing_preview",
+        },
+    )]
 
 
 def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidence(
