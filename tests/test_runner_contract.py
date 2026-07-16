@@ -406,4 +406,8 @@ def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidenc
         "patch_non_empty": True,
         "base_commit": base,
         "result_commit": result["result_commit"],
+        "tuple": "glm52-openrouter-oh",
+        "harness": "openhands",
+        "changed_files": ["value.txt"],
+        "observed_cost_usd": 0.19,
     }
