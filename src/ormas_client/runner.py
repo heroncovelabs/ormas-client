@@ -8,6 +8,7 @@ here writes to the registered checkout or auto-merges the produced patch.
 from __future__ import annotations
 
 import fnmatch
+import math
 import os
 import shlex
 import subprocess
@@ -73,6 +74,19 @@ def changed_paths(worktree: Path) -> list[str]:
         for raw in (tracked + untracked).split(b"\0")
         if raw
     ]
+
+
+def _reported_openhands_cost(result: object) -> float | None:
+    """Read a finite observed cost without treating a budget as usage."""
+    if isinstance(result, dict):
+        value = result.get("observed_cost_usd")
+    else:
+        value = getattr(result, "observed_cost_usd", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
 
 
 def enforce_allowed_paths(worktree: Path, allowed: list[str]) -> None:
@@ -199,7 +213,7 @@ def execute_lease(
     worktree = create_worktree(repo, base_commit)
     try:
         with Heartbeat(client, task_id, runner_id, lease_token):
-            run_openhands(
+            openhands_result = run_openhands(
                 tuple_id=tuple_id,
                 openrouter_key=openrouter_key,
                 worktree=worktree,
@@ -228,12 +242,17 @@ def execute_lease(
             "result_commit": result_commit,
         }
         client.complete(task_id, runner_id, lease_token, evidence)
-        return {
+        result: dict[str, Any] = {
             "task_id": task_id,
             "tuple": tuple_id,
             "worktree": str(worktree),
             "result_commit": result_commit,
+            "changed_files": touched,
         }
+        observed_cost = _reported_openhands_cost(openhands_result)
+        if observed_cost is not None:
+            result["observed_cost_usd"] = observed_cost
+        return result
     except Exception as exc:
         # On any failure send sanitized failed evidence for the existing lease.
         category = exc.error_category if isinstance(exc, RunnerFailure) else "unknown"

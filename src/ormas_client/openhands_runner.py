@@ -11,7 +11,25 @@ customer's local repository path and secrets never leave the machine.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+
+
+def _finite_observed_cost(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _conversation_observed_cost(conversation: object) -> float | None:
+    try:
+        stats = getattr(conversation, "conversation_stats")
+        metrics = stats.get_combined_metrics()
+        return _finite_observed_cost(getattr(metrics, "accumulated_cost"))
+    except (AttributeError, TypeError):
+        return None
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -56,13 +74,14 @@ def run_openhands(
     worktree: Path,
     brief: str,
     budget_usd: float,
-) -> str:
-    """Run OpenHands over ``worktree`` for ``brief`` and return the transcript.
+) -> dict[str, object]:
+    """Run OpenHands and return its transcript plus observed SDK cost.
 
     OpenHands is driven with its default toolset and the browser disabled. The
     model only ever sees the disposable worktree, never the registered checkout.
     The local OpenRouter key is handed directly to the SDK's ``LLM`` and never
-    crosses the control-plane or gateway HTTP boundary.
+    crosses the control-plane or gateway HTTP boundary. ``budget_usd`` remains a
+    caller compatibility parameter; it is not an observed-cost measurement.
     """
     model = resolve_model(tuple_id)
 
@@ -94,4 +113,10 @@ def run_openhands(
     )
     conversation.send_message(brief)
     conversation.run()
-    return str(getattr(conversation, "get_state", lambda: "")() or "")
+    result: dict[str, object] = {
+        "transcript": str(getattr(conversation, "get_state", lambda: "")() or ""),
+    }
+    observed_cost = _conversation_observed_cost(conversation)
+    if observed_cost is not None:
+        result["observed_cost_usd"] = observed_cost
+    return result
