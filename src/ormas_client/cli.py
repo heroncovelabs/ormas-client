@@ -148,6 +148,7 @@ def run_registered_task(
     cost_cap_usd: float,
     dry_run: bool,
     tuple_override: str | None = None,
+    task_id_override: str | None = None,
 ) -> dict[str, object]:
     """Runner-v1 orchestration shared by the CLI runner and the inline MCP tool.
 
@@ -167,6 +168,7 @@ def run_registered_task(
         cost_cap=cost_cap_usd,
         dry_run=dry_run,
         tuple=tuple_override,
+        task_id_override=task_id_override,
     )
     config = load()
     repo_path = config.repositories.get(args.repo_alias)
@@ -187,7 +189,7 @@ def run_registered_task(
     config.runner_id = runner_id
     save(config)
 
-    task_id = f"task-{uuid.uuid4().hex[:12]}"
+    task_id = args.task_id_override or f"task-{uuid.uuid4().hex[:12]}"
 
     if args.dry_run:
         # Dry-run is the default and must never create a task, claim (and
@@ -284,6 +286,20 @@ def run_registered_task(
     )
 
 
+def _background_job(args: argparse.Namespace) -> int:
+    from .mcp_server import _validate_job_id, run_background_job
+
+    job_id = _validate_job_id(args.job_id)
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise SystemExit("invalid background job payload") from exc
+    if not isinstance(payload, dict) or payload.get("job_id") != job_id:
+        raise SystemExit("background job payload does not match job_id")
+    run_background_job(payload)
+    return 0
+
+
 def _runner_start(args: argparse.Namespace) -> int:
     result = run_registered_task(
         repo_alias=args.repo_alias,
@@ -340,6 +356,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--tuple", default=None, help=argparse.SUPPRESS)
     start.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=True)
     start.set_defaults(func=_runner_start)
+    background = sub.add_parser("background-job", help=argparse.SUPPRESS)
+    background.add_argument("--job-id", required=True)
+    background.set_defaults(func=_background_job)
     repo = sub.add_parser("repo")
     repo_sub = repo.add_subparsers(dest="repo_command", required=True)
     add = repo_sub.add_parser("add")
