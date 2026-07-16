@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -363,7 +364,7 @@ def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidenc
         worktree = kwargs["worktree"]
         assert isinstance(worktree, Path)
         (worktree / "value.txt").write_text("after\n", encoding="utf-8")
-        return "done"
+        return SimpleNamespace(transcript="done", observed_cost_usd=0.19)
 
     monkeypatch.setattr("ormas_client.runner.run_openhands", fake_openhands)
 
@@ -397,6 +398,8 @@ def test_execute_lease_edits_only_a_detached_worktree_and_reports_strict_evidenc
     )
     assert (repo / "value.txt").read_text(encoding="utf-8") == "before\n"
     assert Path(result["worktree"]).joinpath("value.txt").read_text(encoding="utf-8") == "after\n"
+    assert result["changed_files"] == ["value.txt"]
+    assert result["observed_cost_usd"] == 0.19
     assert client.completed == {
         "status": "completed",
         "verification_passed": True,

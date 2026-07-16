@@ -88,3 +88,21 @@ def test_inline_job_status_returns_terminal_review_evidence(monkeypatch) -> None
     status_tool = getattr(mcp_server, "ormas_task_status", None)
     assert status_tool is not None, "MCP must expose a status/result polling tool"
     assert status_tool("job-1") == expected
+
+
+def test_safe_result_preserves_precommit_changed_files_and_observed_cost() -> None:
+    result = mcp_server._safe_result(
+        {
+            "task_id": "task-1",
+            "tuple": "grok45-openrouter-oh",
+            "worktree": "/tmp/review-only",
+            "result_commit": "abc1234",
+            "changed_files": ["src/parser.py", "tests/test_parser.py"],
+            "observed_cost_usd": 0.1434,
+        },
+        "job-1",
+        "task-1",
+    )
+
+    assert result["changed_files"] == ["src/parser.py", "tests/test_parser.py"]
+    assert result["observed_cost_usd"] == 0.1434
