@@ -90,11 +90,17 @@ def run_openhands(
     from openhands.sdk import LLM, Agent, AgentContext, Conversation
     from openhands.tools.preset.default import get_default_tools
 
+    # These provider filters are mandatory; fail when no eligible endpoint exists.
     llm = LLM(
         service_id="ormas-client",
         model=f"openrouter/{model}",
         api_key=openrouter_key,
         base_url=OPENROUTER_BASE_URL,
+        litellm_extra_body={
+            "provider": {"zdr": True, "data_collection": "deny"},
+        },
+        caching_prompt=False,
+        prompt_cache_retention=None,
     )
 
     # Browser disabled for the certified local runner.
